@@ -11,3 +11,4 @@ Step to execute the code:
    - **Information message**: The Storage account does not contains any conatiner.
    - **Information message**: Please enable Diagnostics Settings to check the logs/activity of the storage account.
    - **Information message**: Diagnostics Settings are enabled for this account but logging is still disabled. Please change the Diagnostics Settings.
+   - **Information message**: Diagnostics Settings are enabled for this account. Either this storage account have not been used from last 30 days or Logs are not available for this storage account.
