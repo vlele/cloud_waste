@@ -71,7 +71,9 @@ namespace AzureCostManagement
                                 {
                                     if (pageBlob.Properties.LeaseStatus.ToString() == "Unlocked" && pageBlob.Properties.LeaseState.ToString() == "Available")
                                     {
+                                        Console.ForegroundColor = ConsoleColor.Red;
                                         Console.WriteLine("Warning: Unused VHD is present in the storage account.");
+                                        Console.ResetColor();
                                     }
                                     
                                 }
@@ -275,49 +277,102 @@ namespace AzureCostManagement
                 CloudAnalyticsClient analyticsClient = new CloudAnalyticsClient(blobClient.StorageUri, tableClient.StorageUri, tableClient.Credentials);
                 IEnumerable<ICloudBlob> results = analyticsClient.ListLogs(StorageService.Blob, time.AddDays(inactivityDays), null, LoggingOperations.All, BlobListingDetails.Metadata, null, null);
                 List<ICloudBlob> logs = results.ToList();
+                int nonLogEntries = 0;
+                int onlyListLogEntries = 0;
+
+                //Creating folders for storage account
+                string storageName = blobClient.BaseUri.Host.Split('.')[0];
+                string storagePath = (@"C:/logs/" + storageName + "/");
+                Directory.CreateDirectory(storagePath);
 
                 //Download the log files
-                //foreach (var item in logs)
-                //{
-                //    string name = ((CloudBlockBlob)item).Name;
-                //    CloudBlobContainer container = blobClient.GetContainerReference("$logs");
-                //    CloudBlockBlob blockBlob = container.GetBlockBlobReference(name);
+                foreach (var item in logs)
+                {
+                    string name = ((CloudBlockBlob)item).Name;
+                    CloudBlobContainer container = blobClient.GetContainerReference("$logs");
+                    CloudBlockBlob blockBlob = container.GetBlockBlobReference(name);
 
-                //    //specify the directory without file name
-                //    string sub_folder = name.Remove(name.LastIndexOf("/") + 1);
-                //    string path = (@"C:/logs/" + sub_folder);
+                    //specify the directory without file name
+                    string sub_folder = name.Remove(name.LastIndexOf("/") + 1);
+                    string path = (storagePath + sub_folder);
 
-                //    //create the directory if it does not exist.
-                //    Directory.CreateDirectory(path);
+                    //create the directory if it does not exist.
+                    Directory.CreateDirectory(path);
 
-                //    //specify the file full path
-                //    string file_path = (@"C:/logs/" + name);
+                    //specify the file full path
+                    string file_path = (storagePath + name);
 
-                //    using (var fileStream = File.Create(file_path))
-                //    {
+                    using (var fileStream = File.Create(file_path))
+                    {
 
-                //        blockBlob.DownloadToStream(fileStream);
-                //    }
-                //}
+                        blockBlob.DownloadToStream(fileStream);
+                    }
+                }
+                if (logs.Count > 0)
+                {
+
+                    foreach (string file in Directory.GetFiles(storagePath, "*.log", SearchOption.AllDirectories))
+                    {
+                        var contents = File.ReadLines(file);
+                        foreach (var line in contents)
+                        {
+                            string operationType = line.Split(';')[2];
+                            //Ignoring the log entries for fetching logs from logs container & BlobPreflightRequest logs also.
+                            if (!(line.Contains("$logs") || line.Contains("%24logs") || line.Contains("BlobPreflightRequest"))) {
+                                if (operationType.Equals("GetBlobServiceProperties") || operationType.Equals("ListBlobs") || operationType.Equals("ListContainers") || operationType.Equals("GetContainerServiceMetadata")) {
+                                    onlyListLogEntries++;
+                                }
+                                else {
+                                    nonLogEntries++;
+                                }
+                            } 
+                        }
+                    }
+                }
                 ServiceProperties serviceProperties = blobClient.GetServiceProperties();
                 bool isLoggingDisabled = serviceProperties.Logging.LoggingOperations.ToString() == "None";
                 if (isLoggingDisabled) {
-                  Console.WriteLine("Information: Diagnostics Settings are enabled for this account but logging is still disabled. Please change the Diagnostics Settings ");
+                  Console.WriteLine("Information: Diagnostics Settings are enabled for this account but logging is still disabled. Please change the Diagnostics Settings.");
                 } else
                 {
                     if (logs.Count == 0)
                     {
-                        Console.WriteLine("Information: Diagnostics Settings are enabled for this account. Either this storage account have not been used from last " + InactivityDaysForStorageAccount + " days or Logs are not available for this storage account.");
+                        Console.ForegroundColor = ConsoleColor.Red;
+                        Console.WriteLine("Warning: Diagnostics Settings are enabled for this account. Either this storage account has not been used from last " + InactivityDaysForStorageAccount + " days or Logs are not available for this storage account.");
+                        Console.ResetColor();
                     } else
                     {
-                        //If we want to check the logs, we will do that here
-                        Console.WriteLine("Lets check the logs now!");
+                        //If there are log entries other than the list logs means the storage account is in use
+                        if (onlyListLogEntries > 0 && nonLogEntries == 0)
+                        {
+                            Console.ForegroundColor = ConsoleColor.Yellow;
+                            Console.WriteLine("Information: There are only log entries for GetBlobServiceProperties, ListBlobs, ListContainers from last " + InactivityDaysForStorageAccount + " days for this storage account.");
+                            Console.ResetColor();
+                        } else if (onlyListLogEntries == 0 && nonLogEntries == 0)
+                        {
+                            Console.ForegroundColor = ConsoleColor.Red;
+                            Console.WriteLine("Warning: Either the storage account has not been used from last " + InactivityDaysForStorageAccount + " days for this storage account or complete logs are not available.");
+                            Console.ResetColor();
+                        } else
+                        {
+                            Console.ForegroundColor = ConsoleColor.Green;
+                            Console.WriteLine("Storage account is being used in last " + InactivityDaysForStorageAccount + " days!");
+                            Console.ResetColor();
+
+                        }
                     }
                 }
             }
-            catch (Exception)
+            catch (StorageException e)
             {
-                Console.WriteLine("Information: Please enable Diagnostics Settings to check the logs/activity of the storage account.");
+                //If logs container is not present, means diagnostics are not enabled
+                if (e.RequestInformation.ErrorCode == "ContainerNotFound")
+                {
+                   Console.WriteLine("Information: Please enable Diagnostics Settings to check the logs/activity of the storage account.");
+                } else
+                {
+                    Console.WriteLine("Exception occured:" + e.RequestInformation.ErrorCode);
+                }
             }
 
         }
