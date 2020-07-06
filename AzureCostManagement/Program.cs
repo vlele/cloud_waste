@@ -28,7 +28,9 @@ namespace AzureCostManagement
         private static readonly string InactivityDaysForStorageAccount = ConfigurationManager.AppSettings["InactivityDaysForStorageAccount"];
         private static string TenantId = "";
         private static string SubscriptionId = "";
-        
+        List<Subscription> subscriptions = new List<Subscription>();
+        static int tableWidth = 115;
+
         public delegate Task delegates(Resource resource);
         static delegates[] lastUsageChecks = new delegates[]
         {
@@ -94,15 +96,26 @@ namespace AzureCostManagement
         {
             try
             {
-                Console.WriteLine("--- Demo started ---");
+                Console.WriteLine("****** Cost Managment Tool *******");
                 Program p = new Program();
                 List<Subscription> subscriptions = await p.GetSubscriptions();
+                Console.WriteLine("Azure Subscriptions associated with your user account are -");
+                PrintLine();
+                PrintRow("Name", "ID", "Tenant ID");
+                PrintLine();
                 foreach (var subscription in subscriptions)
                 {
-                    TenantId = subscription.TenantId;
-                    SubscriptionId = subscription.SubscriptionId;
-                    Console.WriteLine("Checking Resources for Subscription: " + SubscriptionId);
-                    foreach (var resourceGroup in subscription.ResourceGroups)
+                    PrintRow(subscription.DisplayName, subscription.SubscriptionId, subscription.TenantId);
+                }
+                PrintLine();
+                Console.WriteLine("Enter Subscription ID for which you want to find unused Storage Accounts:");
+                string subscriptionId = Console.ReadLine();
+                var selectedSubscription = subscriptions.Find(i => i.SubscriptionId == subscriptionId);
+                if (selectedSubscription != null) {
+                    TenantId = selectedSubscription.TenantId;
+                    SubscriptionId = selectedSubscription.SubscriptionId;
+                    List<ResourceGroup> resourceGroups = await GetResourceGroups(subscriptionId);
+                    foreach (var resourceGroup in resourceGroups)
                     {
                         foreach (var resource in resourceGroup.Resources)
                         {
@@ -112,10 +125,13 @@ namespace AzureCostManagement
                                     await LastUsageCheckClass.Storage(resource);
                                     break;
                             }
-                            // We will keep building checks for new service types 
+                            //We will keep building checks for new service types
 
                         }
                     }
+                } else
+                {
+                    Console.WriteLine("You have provided incorrect Subscription ID. Please provide correct value.");
                 }
             }
             catch (Exception e)
@@ -171,48 +187,12 @@ namespace AzureCostManagement
                                     TenantId = tenantDescription.TenantId,
                                     State = sub.DisplayName
                                 };
-
-                                var resourceClient = new ResourceManagementClient(tenantTokenCreds);
-                                resourceClient.SubscriptionId = subs.SubscriptionId;
-
-                                Console.WriteLine("Fetching Resource Groups...");
-                                // Getting the resource groups
-                                var groups = resourceClient.ResourceGroups.List().ToList();
-                                List <ResourceGroup> rsGroups = new List<ResourceGroup>();
-                                foreach (var rg in groups)
-                                {
-                                    ResourceGroup rg1 = new ResourceGroup()
-                                    {
-                                        Id = rg.Id,
-                                        Name = rg.Name,
-                                        Location = rg.Location
-                                    };
-                                    List<Resource> resources = new List<Resource>();
-                                    foreach (var resource in await resourceClient.Resources.ListByResourceGroupAsync(rg.Name))
-                                    {
-                                        
-                                        Resource rs1 = new Resource()
-                                        {
-                                            Id = resource.Id,
-                                            Name = resource.Name,
-                                            Location = resource.Location,
-                                            Type = resource.Type,
-                                            ResourceGroupName = rg.Name
-                                        };
-                                        resources.Add(rs1);
-                                    }
-                                    rg1.Resources = resources;
-                                    rsGroups.Add(rg1);
-
-                                }
-                                subs.ResourceGroups = rsGroups;
-                                subscriptions.Add(subs);
+                                subscriptions.Add(subs); 
                             }
                         }
                     }
                 }
                 return subscriptions;
-
             }
             catch(Exception ex)
             {
@@ -240,6 +220,45 @@ namespace AzureCostManagement
             }
 
             return result.AccessToken;
+        }
+
+        public static async Task<List<ResourceGroup>> GetResourceGroups (string subscriptionId)
+        {
+            Console.WriteLine("Fetching Resource Groups...");
+            string token = await GetOAuthTokenFromAADAsync();
+            var tenantTokenCreds = new TokenCredentials(token);
+            var resourceClient = new ResourceManagementClient(tenantTokenCreds);
+            resourceClient.SubscriptionId = subscriptionId;
+            // Getting the resource groups
+            var groups = resourceClient.ResourceGroups.List().ToList();
+            List<ResourceGroup> rsGroups = new List<ResourceGroup>();
+            Console.WriteLine("Fetching Resources...");
+            foreach (var rg in groups)
+            {
+                ResourceGroup rg1 = new ResourceGroup()
+                {
+                    Id = rg.Id,
+                    Name = rg.Name,
+                    Location = rg.Location
+                };
+                List<Resource> resources = new List<Resource>();
+                foreach (var resource in await resourceClient.Resources.ListByResourceGroupAsync(rg.Name))
+                {
+
+                    Resource rs1 = new Resource()
+                    {
+                        Id = resource.Id,
+                        Name = resource.Name,
+                        Location = resource.Location,
+                        Type = resource.Type,
+                        ResourceGroupName = rg.Name
+                    };
+                    resources.Add(rs1);
+                }
+                rg1.Resources = resources;
+                rsGroups.Add(rg1);
+            }
+            return rsGroups;
         }
 
         public static async Task<String> GetStorageAccountConnectionString(string resourceGroupName, string accountName)
@@ -282,7 +301,8 @@ namespace AzureCostManagement
 
                 //Creating folders for storage account
                 string storageName = blobClient.BaseUri.Host.Split('.')[0];
-                string storagePath = (@"C:/logs/" + storageName + "/");
+                string tempPath = Path.GetTempPath();
+                string storagePath = (tempPath + "/logs/" + storageName + "/");
                 Directory.CreateDirectory(storagePath);
 
                 //Download the log files
@@ -389,6 +409,38 @@ namespace AzureCostManagement
 
             } while (continuationToken != null);
             return containers;
+        }
+
+        static void PrintLine()
+        {
+            Console.WriteLine(new string('-', tableWidth));
+        }
+
+        static void PrintRow(params string[] columns)
+        {
+            int width = (tableWidth - columns.Length) / columns.Length;
+            string row = "|";
+
+            foreach (string column in columns)
+            {
+                row += AlignCentre(column, width) + "|";
+            }
+
+            Console.WriteLine(row);
+        }
+
+        static string AlignCentre(string text, int width)
+        {
+            //text = text.Length > width ? text.Substring(0, width - 3) + "..." : text;
+
+            if (string.IsNullOrEmpty(text))
+            {
+                return new string(' ', width);
+            }
+            else
+            {
+                return text.PadRight(width - (width - text.Length) / 2).PadLeft(width);
+            }
         }
     }
 }
