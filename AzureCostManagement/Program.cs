@@ -29,7 +29,7 @@ namespace AzureCostManagement
         private static string TenantId = "";
         private static string SubscriptionId = "";
         List<Subscription> subscriptions = new List<Subscription>();
-        static int tableWidth = 115;
+        private static List<StorageAccount> storageAccounts = new List<StorageAccount>();
 
         public delegate Task delegates(Resource resource);
         static delegates[] lastUsageChecks = new delegates[]
@@ -51,13 +51,17 @@ namespace AzureCostManagement
                     Console.WriteLine("Resource Name:" + resource.Name);
                     Console.WriteLine("Resource Type:" + resource.Type);
 
+                    //Fetching the connection string for storage account and creating the blob and table client
                     string connectionString = await GetStorageAccountConnectionString(resourceGroupName, accountName);
                     CloudBlobClient blobClient = GetBlobClient(connectionString);
                     CloudTableClient tableClient = GetTableClient(connectionString);
-                    GetAnalyticsLogs(blobClient, tableClient);
-                    
+
+                    //Creating Storage account object for showing the results in the table
+                    StorageAccount strAccount = new StorageAccount();
+                    strAccount.Id = resource.Id;
+                    strAccount.Name = resource.Name;
+
                     List<CloudBlobContainer> containers = await ListContainersAsync(blobClient);
-                    
                     if (containers.Count == 0)
                     {
                         Console.WriteLine("Information: The Storage Account does not have any Containers!");
@@ -76,6 +80,7 @@ namespace AzureCostManagement
                                         Console.ForegroundColor = ConsoleColor.Red;
                                         Console.WriteLine("Warning: Unused VHD is present in the storage account.");
                                         Console.ResetColor();
+                                        strAccount.isUnusedVhdPresent = true;
                                     }
                                     
                                 }
@@ -83,6 +88,7 @@ namespace AzureCostManagement
 
                         }
                     }
+                    GetAnalyticsLogs(blobClient, tableClient, strAccount);
                     Console.WriteLine();
                 }
                 catch (Exception)
@@ -96,18 +102,19 @@ namespace AzureCostManagement
         {
             try
             {
+                int tableWidth = 115;
                 Console.WriteLine("****** Cost Managment Tool *******");
                 Program p = new Program();
                 List<Subscription> subscriptions = await p.GetSubscriptions();
                 Console.WriteLine("Azure Subscriptions associated with your user account are -");
-                PrintLine();
-                PrintRow("Name", "ID", "Tenant ID");
-                PrintLine();
+                PrintLine(tableWidth);
+                PrintRow(tableWidth, "Name", "ID", "Tenant ID");
+                PrintLine(tableWidth);
                 foreach (var subscription in subscriptions)
                 {
-                    PrintRow(subscription.DisplayName, subscription.SubscriptionId, subscription.TenantId);
+                    PrintRow(tableWidth, subscription.DisplayName, subscription.SubscriptionId, subscription.TenantId);
                 }
-                PrintLine();
+                PrintLine(tableWidth);
                 Console.WriteLine("Enter Subscription ID for which you want to find unused Storage Accounts:");
                 string subscriptionId = Console.ReadLine();
                 var selectedSubscription = subscriptions.Find(i => i.SubscriptionId == subscriptionId);
@@ -122,8 +129,10 @@ namespace AzureCostManagement
                             switch (resource.Type)
                             {
                                 case "Microsoft.Storage/storageAccounts":
-                                    await LastUsageCheckClass.Storage(resource);
-                                    break;
+                                    {
+                                        await LastUsageCheckClass.Storage(resource);
+                                        break;
+                                    }
                             }
                             //We will keep building checks for new service types
 
@@ -140,6 +149,7 @@ namespace AzureCostManagement
             }
             finally
             {
+                GenerateStorageResultTable();
                 Console.WriteLine("End of demo, press any key to exit.");
                 Console.ReadKey();
             }
@@ -287,7 +297,7 @@ namespace AzureCostManagement
             return tableClient;
         }
 
-        public static void GetAnalyticsLogs(CloudBlobClient blobClient, CloudTableClient tableClient)
+        public static void GetAnalyticsLogs(CloudBlobClient blobClient, CloudTableClient tableClient, StorageAccount strAccount)
         {
             try
             {
@@ -330,7 +340,6 @@ namespace AzureCostManagement
                 }
                 if (logs.Count > 0)
                 {
-
                     foreach (string file in Directory.GetFiles(storagePath, "*.log", SearchOption.AllDirectories))
                     {
                         var contents = File.ReadLines(file);
@@ -351,15 +360,18 @@ namespace AzureCostManagement
                 }
                 ServiceProperties serviceProperties = blobClient.GetServiceProperties();
                 bool isLoggingDisabled = serviceProperties.Logging.LoggingOperations.ToString() == "None";
+                strAccount.isDiagnosticsEnabled = true;
                 if (isLoggingDisabled) {
-                  Console.WriteLine("Information: Diagnostics Settings are enabled for this account but logging is still disabled. Please change the Diagnostics Settings.");
+                    Console.WriteLine("Information: Diagnostics Settings are enabled for this account but logging is still disabled. Please change the Diagnostics Settings.");
                 } else
                 {
+                    strAccount.isLoggingEnabled = true;
                     if (logs.Count == 0)
                     {
                         Console.ForegroundColor = ConsoleColor.Red;
                         Console.WriteLine("Warning: Diagnostics Settings are enabled for this account. Either this storage account has not been used from last " + InactivityDaysForStorageAccount + " days or Logs are not available for this storage account.");
                         Console.ResetColor();
+                        strAccount.isNotUsed = true;
                     } else
                     {
                         //If there are log entries other than the list logs means the storage account is in use
@@ -368,16 +380,19 @@ namespace AzureCostManagement
                             Console.ForegroundColor = ConsoleColor.Yellow;
                             Console.WriteLine("Information: There are only log entries for GetBlobServiceProperties, ListBlobs, ListContainers from last " + InactivityDaysForStorageAccount + " days for this storage account.");
                             Console.ResetColor();
+                            strAccount.onlyListLogEntries = true;
                         } else if (onlyListLogEntries == 0 && nonLogEntries == 0)
                         {
                             Console.ForegroundColor = ConsoleColor.Red;
                             Console.WriteLine("Warning: Either the storage account has not been used from last " + InactivityDaysForStorageAccount + " days for this storage account or complete logs are not available.");
                             Console.ResetColor();
+                            strAccount.isNotUsed = true;
                         } else
                         {
                             Console.ForegroundColor = ConsoleColor.Green;
                             Console.WriteLine("Storage account is being used in last " + InactivityDaysForStorageAccount + " days!");
                             Console.ResetColor();
+                            strAccount.isUsed = true;
 
                         }
                     }
@@ -388,13 +403,17 @@ namespace AzureCostManagement
                 //If logs container is not present, means diagnostics are not enabled
                 if (e.RequestInformation.ErrorCode == "ContainerNotFound")
                 {
-                   Console.WriteLine("Information: Please enable Diagnostics Settings to check the logs/activity of the storage account.");
+                    strAccount.isDiagnosticsEnabled = false;
+                    Console.WriteLine("Information: Please enable Diagnostics Settings to check the logs/activity of the storage account.");
                 } else
                 {
                     Console.WriteLine("Exception occured:" + e.RequestInformation.ErrorCode);
                 }
             }
-
+            finally
+            {
+                storageAccounts.Add(strAccount);
+            }
         }
 
         public static async Task<List<CloudBlobContainer>> ListContainersAsync(CloudBlobClient blobClient)
@@ -411,12 +430,53 @@ namespace AzureCostManagement
             return containers;
         }
 
-        static void PrintLine()
+        public static void GenerateStorageResultTable()
+        {
+            int tableWidth = 200;
+            Console.WriteLine("Observations for last " + InactivityDaysForStorageAccount + " days for following Storage Accounts:");
+            PrintLine(tableWidth);
+            PrintRow(tableWidth, "Name", "Results");
+            PrintLine(tableWidth);
+            foreach (var strAcc in storageAccounts)
+            {
+                string displayComment = "";
+                if (!strAcc.isDiagnosticsEnabled)
+                {
+                    displayComment += "Diagnostics is disabled.";
+                } else
+                {
+                    if (!strAcc.isLoggingEnabled)
+                    {
+                        displayComment += "Diagnostics is enabled but logging is disabled.";
+                    }
+                    if (strAcc.isNotUsed)
+                    {
+                        displayComment += "Storage account is not used or complete logs are not available.";
+                    }
+                    if (strAcc.isUsed)
+                    {
+                        displayComment += "Storage account is in use.";
+                    }
+                    if (strAcc.onlyListLogEntries)
+                    {
+                        displayComment += "There are only log entries for GetBlobServiceProperties, ListBlobs, ListContainers.";
+                    }
+                }
+                if (strAcc.isUnusedVhdPresent)
+                {
+                    displayComment += " Unused VHD is present the storage account.";
+                }
+                PrintRow(tableWidth, strAcc.Name, displayComment);
+            }
+            PrintLine(tableWidth);
+        }
+
+        static void PrintLine(int tableWidth)
         {
             Console.WriteLine(new string('-', tableWidth));
         }
 
-        static void PrintRow(params string[] columns)
+        static void PrintRow(int tableWidth, params string[] columns)
         {
             int width = (tableWidth - columns.Length) / columns.Length;
             string row = "|";
